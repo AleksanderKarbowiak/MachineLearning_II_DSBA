@@ -1,0 +1,829 @@
+---
+title: "House sales in King County USA"
+author: "Daniela Quintero Narvaez Aleksander Karbowiak"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## House sales in King County USA - Regression problem
+
+Real estate purchases have always been a burning topic. Should you invest your savings in a house or put it in a deposit? And if a buyer has already decided to buy a plot of land, the question arose as to which one to choose? And above all, is the property really worth the price?
+
+In this project, we will try to research and predict U.S. home prices from King County of Washington State. The dataset comes from https://www.kaggle.com/datasets/shivachandel/kc-house-data and consists of historic data of houses sold between May 2014 to May 2015.
+
+```{r echo=FALSE, message=FALSE}
+library(tidyverse)
+library(tree)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+library(here)
+library(corrplot)
+library(neuralnet)
+library(gbm)
+library(boot) 
+library(UBL)
+
+
+```
+
+```{r message=FALSE}
+house_data <- read.csv(file="r1.csv",header=TRUE,sep=",")
+str(house_data)
+```
+
+Dataset has 31 variables and 26 795 observations.
+
+Variables description:    
+- id: A unique identification number for each transaction.    
+- date: Date of house purchase.   
+- price: Selling price of the house. It is our dependent variable.    
+- bedrooms: Number of bedrooms in the house.    
+- bathrooms: Number of bathrooms in the house.    
+- sqft_living: Living area in square feet.    
+- sqft_lot: Lot area in square feet.    
+- floors: Number of floors of the house.    
+- waterfront: Variable marking whether the house has a water (see, lake etc.) view (value 1 if yes, 0 otherwise).   
+- view: Rate of view from the house (values from 0 to 4).   
+- condition: Overall condition of the house (values from 1 to 5).   
+- grade: Evaluates the quality of construction and design of the house (values from 1 to 13).   
+- sqft_above: Living area of the top floor.   
+- sqft_basement: Living area of the basement.   
+- yr_built: Year the house was built.   
+- yr_renovated: Year of most recent renovation (if any).    
+- zipcode: Postal code of the area.   
+- lat: Latitude.    
+- long: Longitude.    
+- sqft_living15: Average living area of the 15 nearest houses.    
+- sqft_lot15: Average lot area of the 15 nearest houses.    
+- feat01 <-> feat10: features without business meanings.    
+
+## Initial analysis
+  
+First of all we are going to check if our dataset has NA's or duplicateted values.
+```{r  echo=FALSE, message=FALSE }
+colSums(is.na(house_data)) %>% 
+  sort()
+
+print("Duplicates check")
+house_data_reduced <- house_data[,!(names(house_data) %in% c("id"))]
+house_data_reduced[duplicated(house_data_reduced)]
+```
+As we can see there is no NA's and no duplicates.
+
+```{r  message=FALSE, warning=FALSE}
+#distribution of price var
+a <- ggplot(house_data, aes(x = price))
+a + geom_density() +
+  geom_vline(aes(xintercept = mean(price)), 
+             linetype = "dashed", size = 0.6, colour="red") + geom_vline(aes(xintercept = median(price)), 
+                                                           linetype = "dashed", size = 0.6, colour="green") + scale_x_continuous() + theme_minimal()
+
+paste0("Mean price: ",mean(house_data$price))
+paste0("Median price: ",median(house_data$price))
+```
+Above there is a distribution of our target variable - price. As we can see the distribution is right skewed. Mean is higher than median. There are outliers with huge values.    
+
+Another part of analysis is correlation check. We wanted to find varaibles that can be significant.
+
+```{r  message=FALSE}
+#correlation
+res <- cor(house_data)
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(res, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+        sig.level = 0.01, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE , number.cex = 0.4, tl.cex = 0.5
+)
+```
+
+Variables which clearly describe another properties like number of bathrooms, grade, view etc. are positively correlated with target variable what seems fair. But we can observe also that feat02 and feat05 can boost our results. Moreover latitude and longitude variables are important, so localization matters. That can be seen on the map below.
+
+  
+```{r  message=FALSE, warning=FALSE}
+library(leaflet)
+quartiles <- quantile(house_data$price, probs=c(.25, .99), na.rm = FALSE)
+IQR <- IQR(house_data$price)
+Lower <- quartiles[1] - 1.5*IQR
+Upper <- quartiles[2] + 1.5*IQR 
+# Sort the data by price in descending order
+sorted_data <- house_data[order(-house_data$price), ]
+
+# Select the top 30 houses with the highest prices
+top_100_high_price <- head(sorted_data, 200)
+
+# Select the top 30 houses with the lowest prices
+top_100_low_price <- tail(sorted_data, 200)
+top_99_quantile_high_price <- subset(sorted_data, price>=Upper)
+# Combine the selected dataframes
+selected_data <- rbind(top_100_high_price, top_100_low_price)
+
+# Define colors for the map
+selected_data$markerColor <- ifelse(selected_data$price %in% top_99_quantile_high_price$price, "gold", ifelse(selected_data$price %in% top_100_high_price$price,"blue","green"))
+
+map <- leaflet(selected_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~long,
+    lat = ~lat,
+    label = ~price,
+    radius = 5,
+    color = ~markerColor,
+    fillOpacity = 0.8
+  ) %>%
+  addLegend("bottomright", colors = c("gold","blue" ,"green"), labels = c("TOP 99th quantile $$$","Top 200 $$$", "The Cheapest 200 $"), opacity = 1)
+
+map
+
+
+```
+  
+Based on the map above we can see that localization matters. In the city center of Seattle there are the most expensive parcels. On the south of the city we can observe the cheapest homes.
+  
+To select key features for our final model we have also decided to examine variable importance based on default regression trees.   
+
+```{r  message=FALSE, warning=FALSE}
+
+House.treeRPARTReduced <- rpart(price~.,
+                     data = house_data,
+                     method = "anova")
+
+#var importance
+df <- data.frame(imp = House.treeRPARTReduced$variable.importance)
+df2 <- df %>% 
+  tibble::rownames_to_column() %>% 
+  dplyr::rename("variable" = rowname) %>% 
+  dplyr::arrange(imp) %>%
+  dplyr::mutate(variable = forcats::fct_inorder(variable))
+ggplot2::ggplot(df2) +
+  geom_col(aes(x = variable, y = imp),
+           col = "black", show.legend = F) +
+  coord_flip() +
+  scale_fill_grey() +
+  theme_bw()
+```
+  
+Based on gathered information we have decided to built our final model.
+
+```{r  echo=FALSE, message=FALSE}
+print(paste0("Final formula: ","price ~ feat02 + feat05 + view + grade + sqft_above + sqft_living + sqft_living15 + bathrooms + lat + long + yr_built + floors + condition + waterfront + bedrooms"))
+```
+
+## Data preparation and split
+
+```{r  message=FALSE}
+
+formula_based_on_rpart_importance = price ~ feat02 + feat05 + view + grade + sqft_above + sqft_living +sqft_living15 + bathrooms + lat + long + yr_built + floors + condition+waterfront+bedrooms;
+#deal with outliers in key variables
+important_features <- c("feat02","feat05","view","grade","sqft_above","sqft_living15","sqft_living","bathrooms","bedrooms","lat","long","yr_built","floors","condition")
+
+for (i in important_features) {
+  quantiles <- quantile(house_data[[i]], c(0.01, 0.99))
+  house_data <- house_data %>%
+    mutate({{i}} := ifelse(house_data[[i]] < quantiles[1], quantiles[1], 
+                           ifelse(house_data[[i]] > quantiles[2], quantiles[2], house_data[[i]])))
+}
+
+#delete outliers in Y var
+quartiles <- quantile(house_data$price, probs=c(.25, .99), na.rm = FALSE)
+IQR <- IQR(house_data$price)
+Lower <- quartiles[1] - 1.5*IQR
+Upper <- quartiles[2] + 1.5*IQR 
+data_no_outlier <- subset(house_data, house_data$price < Upper)
+
+
+set.seed(123456789)
+training_obs <- createDataPartition(house_data$price, 
+                                    p = 0.7, 
+                                    list = FALSE)
+House.train <- house_data[training_obs,]
+House.test  <- house_data[-training_obs,]
+
+#Balanced data
+House.train.balanced <- SmoteRegress(formula_based_on_rpart_importance, House.train,rel = "auto", thr.rel = 0.01, C.perc = "extreme",k = 5, repl = FALSE, dist = "Euclidean", p = 2)
+
+training_obs2 <- createDataPartition(data_no_outlier$price,p = 0.7,list = FALSE)
+House.train2 <- data_no_outlier[training_obs2,]
+House.test2  <- data_no_outlier[-training_obs2,]
+```
+We have decided to prepare some dataset for modelling. We have deleted outliers in X variables using IQR method, we have also deleted outliers in Y variable. Moreover we have prepared another dataset in which SMOTE method was used to balance data in price - target variable. For neural network training we have also prepared standardized data.
+
+## General GLM model
+```{r  message=FALSE}
+House.glmFull <- glm(formula_based_on_rpart_importance, data=House.train)
+summary(House.glmFull)
+
+
+House.glmFull.pred.train <- predict(House.glmFull, House.train)
+print("MSE train")
+(lm.MSE.train <- sum((House.glmFull.pred.train - House.train$price) ^ 2) / nrow(House.train))
+print("MAE train")
+(lm.MAE.train <- sum(abs(House.glmFull.pred.train - House.train$price)) / nrow(House.train))
+
+House.glmFull.pred.test <- predict(House.glmFull, House.test)
+print("MSE test")
+(lm.MSE.test <- sum((House.glmFull.pred.test - House.test$price) ^ 2) / nrow(House.test))
+print("MAE test")
+(lm.MAE.test <- sum(abs(House.glmFull.pred.test - House.test$price)) / nrow(House.test))
+```
+First of all we have checked how GLM model deals with our data. The outcome looks stable for train and test but are not satisfying. 
+
+## Decision Tree models
+```{r  message=FALSE}
+House.treeFull <- tree(formula_based_on_rpart_importance, House.train)
+
+#MSE for train
+House.treeFull.TrainPred  <- predict(House.treeFull,  newdata = House.train)
+paste("MSE for TRAIN = ",mean((House.treeFull.TrainPred- as.numeric(House.train$price)) ^ 2))
+#MAE for train
+paste("MAE for TRAIN =",mean(abs(House.treeFull.TrainPred- as.numeric(House.train$price))))
+
+#MSE for test
+House.treeFull.TestPred  <- predict(House.treeFull,  newdata = House.test)
+paste("MSE for TEST = ",mean((House.treeFull.TestPred- House.test$price) ^ 2))
+#MAE for test
+paste("MAE for TEST =",mean(abs(House.treeFull.TestPred- as.numeric(House.test$price))))
+
+plot(House.treeFull)
+text(House.treeFull, pretty = 0)
+```
+
+Based on presented tree our model perform first split on grade variable. As we go deeper we can observe that our mysterious feat05 variable is taking part in the decisions process. 
+```{r  message=FALSE}
+House.treeReduced2 <- tree(formula_based_on_rpart_importance, data=House.train)
+House.treeReduced2.TrainPred  <- predict(House.treeReduced2,  newdata = House.train)
+paste("MSE for TRAIN = ",mean((House.treeReduced2.TrainPred- House.train$price) ^ 2))
+paste("MAE for TRAIN = ",mean(abs(House.treeReduced2.TrainPred- House.train$price)))
+#on data without outliers
+House.treeReducedWithoutOutliers2 <- tree(formula_based_on_rpart_importance, data=House.train2)
+House.treeReducedWithoutOutliers2.TrainPred  <- predict(House.treeReducedWithoutOutliers2,  newdata = House.train2)
+paste("MSE for Train Tree reduced = ",mean((House.treeReducedWithoutOutliers2.TrainPred- House.train2$price) ^ 2))
+paste("MAE for Train Tree reduced = ",mean(abs(House.treeReducedWithoutOutliers2.TrainPred- House.train2$price)))
+
+```
+
+Then we decided to prune our trees. 
+
+```{r  message=FALSE, warning=FALSE}
+House.cv <- cv.tree(House.treeReduced2, K = 15)
+plot(House.cv$size, House.cv$dev, type = 'b')
+House.treeReduced2.pruned <- prune.tree(House.treeReduced2, best = 12)
+House.treeReduced2.pruned.pred <- predict(House.treeReduced2.pruned,
+                              newdata = House.test)
+paste("MSE for TRAIN = ",mean((House.treeReduced2.pruned.pred   - House.test$price) ^ 2))
+paste("MAE for TRAIN = ",mean(abs(House.treeReduced2.pruned.pred   - House.test$price)))
+```
+Pruning trees also also did not give us the expected better results.
+  
+For the best possible results we tried tuning hyperparameters. 
+```{r  message=FALSE}
+hyper_grid <- expand.grid(
+  minsplit = seq(5, 20, 1),
+  maxdepth = seq(8, 15, 1)
+)
+models <- list()
+for (i in 1:nrow(hyper_grid)) {
+  
+  # setting the values
+  minsplit <- hyper_grid$minsplit[i]
+  maxdepth <- hyper_grid$maxdepth[i]
+  
+  # settin the seed
+  set.seed(123123 + i)
+  
+  # training of the model and saving results to the list
+  models[[i]] <- rpart(
+    formula = formula_based_on_rpart_importance,
+    data    = House.train.balanced,
+    method  = "anova",
+    control = list(minsplit = minsplit, maxdepth = maxdepth)
+  )
+}
+
+get_cp <- function(x) {
+  min <- which.min(x$cptable[, "xerror"])
+  cp  <- x$cptable[min, "CP"] 
+  return(cp)
+}
+
+get_min_error <- function(x) {
+  min    <- which.min(x$cptable[, "xerror"])
+  xerror <- x$cptable[min, "xerror"] 
+  return(xerror)
+}
+hyper_grid %>%
+  mutate(
+    cp    = purrr::map_dbl(models, get_cp),
+    error = purrr::map_dbl(models, get_min_error)
+  ) %>%
+  arrange(error) %>%
+  top_n(-5, wt = error)
+
+houses.tree.optimal <- rpart(
+  formula = formula_based_on_rpart_importance,
+  data    = House.train.balanced,
+  method  = "anova",
+  control = list(minsplit = 5, maxdepth = 15, cp = 0.01)
+)
+
+pred <- predict(houses.tree.optimal, newdata = House.train.balanced)
+
+paste("MSE for TRAIN = ",mean((pred   - House.train.balanced$price) ^ 2))
+paste("MAE for TRAIN = ",mean(abs(pred   - House.train.balanced$price)))
+
+pred_test <- predict(houses.tree.optimal, newdata = House.test)
+
+paste("MSE for TEST = ",mean((pred_test   - House.test$price) ^ 2))
+paste("MAE for TEST = ",mean(abs(pred_test   - House.test$price)))
+```
+As we can observe the results of different decisions trees are not better than GLM. We have to try different models.
+  
+## Random Forest models
+The next model we have tried was Random Forest model.
+```{r  message=FALSE}
+library(randomForest)
+
+kingCounty.rf <- randomForest(formula_based_on_rpart_importance ,
+                          data   = House.train.balanced,
+                          mtry   = 5, ntree=300,nodesize=3,
+                          importance = TRUE)
+
+kingCounty.rf.pred <- predict(kingCounty.rf,
+                          newdata = House.train.balanced)
+paste("MSE for TRAIN = ",mean((kingCounty.rf.pred   - House.train.balanced$price) ^ 2))
+paste("MAE for TRAIN = ",mean(abs(kingCounty.rf.pred   - House.train.balanced$price)))
+kingCounty.rf.predt <- predict(kingCounty.rf,
+                          newdata = House.test)
+paste("MSE for TEST = ",mean((kingCounty.rf.predt   - House.test$price) ^ 2))
+paste("MAE for TEST = ",mean(abs(kingCounty.rf.predt   - House.test$price)))
+
+```
+And now we can see that results changed so much. MAE for TEST is 67k dollars. But for TEST it is much lower - 29k dollars. RF results are clearly overfitted. 
+
+
+## Gradient Boosting models
+```{r  message=FALSE}
+House.gbm <- gbm(formula_based_on_rpart_importance, 
+                  data = House.train, 
+                  distribution = "gaussian",
+                  n.trees = 600, #800
+                  interaction.depth = 10, shrinkage=0.01)
+House.gbm.pred <- predict(House.gbm,
+                           newdata = House.train,
+                           n.trees = 600,
+                          interaction.depth = 10, shrinkage=0.01) #shrinkage is a key to disable overfitting
+paste("MSE for TRAIN GBM = ",mean((House.gbm.pred - House.train$price) ^ 2))
+paste("MAE for TRAIN GBM = ",mean(abs(House.gbm.pred - House.train$price)))
+
+House.gbm.test_pred <- predict(House.gbm,
+                                newdata = House.test,
+                                n.trees = 600,
+                               interaction.depth = 10, shrinkage=0.01)
+paste("MSE for TEST GBM = ",mean((House.gbm.test_pred - House.test$price) ^ 2))
+paste("MAE for TEST GBM = ",mean(abs(House.gbm.test_pred - House.test$price)))
+```
+
+At first we have trained model on dataset with outliers done for independent variables. Outcomes looks good. MAE for TEST is on the level of 77k.
+
+```{r  message=FALSE}
+#Balanced boosting
+House_balanced.gbm <- gbm(formula_based_on_rpart_importance, 
+                 data = House.train.balanced, 
+                 distribution = "gaussian",
+                 n.trees = 800,
+                 interaction.depth = 10, shrinkage = 0.01)
+House_balanced.gbm.pred <- predict(House_balanced.gbm,
+                          newdata = House.train.balanced,
+                          n.trees = 800,
+                          interaction.depth = 10, shrinkage = 0.01)
+paste("MSE for TRAIN GBM = ",mean((House_balanced.gbm.pred - House.train.balanced$price) ^ 2))
+paste("MAE for TRAIN GBM = ",mean(abs(House_balanced.gbm.pred - House.train.balanced$price)))
+
+House_balanced.gbm.test_pred <- predict(House_balanced.gbm,
+                               newdata = House.test,
+                               n.trees = 800,
+                               interaction.depth = 10, shrinkage = 0.01)
+paste("MSE for TEST GBM = ",mean((House_balanced.gbm.test_pred - House.test$price) ^ 2))
+paste("MAE for TEST GBM = ",mean(abs(House_balanced.gbm.test_pred - House.test$price)))
+
+```
+
+Then we have tried GBM on data balanced with SMOTE method. Results aren't better than reulsts before. 77.7k for MAE TEST.
+
+```{r  message=FALSE}
+House2.gbm <- gbm(formula_based_on_rpart_importance, 
+                  data = House.train2, 
+                  distribution = "gaussian",
+                  n.trees = 800,
+                  interaction.depth = 10, shrinkage = 0.01)
+summary(House2.gbm)
+House2.gbm.pred <- predict(House2.gbm,
+                           newdata = House.train2,
+                           n.trees = 800,
+                           interaction.depth = 10, shrinkage = 0.01)
+paste("MSE for TRAIN GBM = ",mean((House2.gbm.pred - House.train2$price) ^ 2))
+paste("MAE for TRAIN GBM = ",mean(abs(House2.gbm.pred - House.train2$price)))
+
+House2.gbm.test_pred <- predict(House2.gbm,
+                           newdata = House.test2,
+                           n.trees = 800,
+                           interaction.depth = 10, shrinkage = 0.01)
+paste("MSE for TEST GBM = ",mean((House2.gbm.test_pred - House.test2$price) ^ 2))
+paste("MAE for TEST GBM = ",mean(abs(House2.gbm.test_pred - House.test2$price)))
+
+```
+Results of GBM trained on data with all outliers reduced (Xs and Y) are also promising. MAE for TEST is on the level of 69k dollars.
+
+```{r  message=FALSE}
+if (0) {
+  grid <- expand.grid(interaction.depth = c(3, 7),
+                      n.trees = c(100, 500, 1000),
+                      shrinkage = c(0.01, 0.1), 
+                      n.minobsinnode = c(5, 7, 10, 15))
+  
+  House.gbm.tuned  <- train(formula_based_on_rpart_importance,
+                             data = House.train,
+                             distribution = "gaussian",
+                             method = "gbm",
+                             tuneGrid = grid,
+                             verbose = FALSE)  
+  saveRDS(House.gbm.tuned, file= "House.gbm.tuned.rds")
+  
+}
+
+House.gbm.tuned <- readRDS("House.gbm.tuned.rds")
+
+# optimal parameters:
+#House.gbm.tuned
+# n.trees = 1000, interaction.depth = 7,
+# shrinkage = 0.01 and n.minobsinnode = 10.
+
+# retraining the model with optimal parameters
+House.gbm3 <- gbm(formula_based_on_rpart_importance ,
+                   data = House.train,
+                   distribution = "gaussian",
+                   n.trees = 1000,
+                   interaction.depth = 7,
+                   shrinkage = 0.01,
+                   n.minobsinnode = 10,
+                   verbose = F)
+House.gbm3.train.pred <- predict(House.gbm3,
+                           newdata = House.train,
+                           n.trees = 1000)
+paste("MSE for TRAIN GBM = ",mean((House.gbm3.train.pred - House.train$price) ^ 2))
+paste("MAE for TRAIN GBM = ",mean(abs(House.gbm3.train.pred - House.train$price)))
+
+House.gbm3.pred <- predict(House.gbm3,
+                            newdata = House.test,n.trees = 1000)
+paste("MSE for TEST GBM = ",mean((House.gbm3.pred - House.test$price) ^ 2))
+paste("MAE for TEST GBM = ",mean(abs(House.gbm3.pred - House.test$price)))
+```
+Tunned GBM showed us very good results. MAE for train is on the level of 76k dollars. For MSE it is ca. 71k dollars so model is much less overfitted than the models before.
+
+
+## Neural Network models
+  
+For Neural Network analysis and training we have prepared standardized dataset and linear model as a benchmark.
+```{r  message=FALSE}
+#Benchmark LM
+lm.fit <- lm(formula_based_on_rpart_importance , data = House.train)
+#summary(lm.fit)
+
+lm.pred.train <- predict(lm.fit, House.train)
+lm.MSE.train <- sum((lm.pred.train - House.train$price) ^ 2) / nrow(House.train)
+lm.MAE.train <- sum(abs(lm.pred.train - House.train$price)) / nrow(House.train)
+
+lm.pred <- predict(lm.fit, House.test)
+lm.MSE <- sum((lm.pred - House.test$price) ^ 2) / nrow(House.test)
+lm.MAE <- sum(abs(lm.pred - House.test$price)) / nrow(House.test)
+train.maxs <- apply(House.train, 2, max)
+train.mins <- apply(House.train, 2, min)
+
+
+train.maxs2 <- apply(House.train2, 2, max)
+train.mins2 <- apply(House.train2, 2, min)
+
+train.maxs3 <- apply(House.train.balanced, 2, max)
+train.mins3 <- apply(House.train.balanced, 2, min)
+
+#Standarization
+House.train %>% glimpse()
+House.train.scaled <- 
+  as.data.frame(scale(House.train, 
+                      center = train.mins, 
+                      scale  = train.maxs - train.mins))
+House.test.scaled <- 
+  as.data.frame(scale(House.test, 
+                      center = train.mins, 
+                      scale  = train.maxs - train.mins))
+
+
+
+House.train2.scaled <- 
+  as.data.frame(scale(House.train2, 
+                      center = train.mins2, 
+                      scale  = train.maxs2 - train.mins2))
+House.test2.scaled <- 
+  as.data.frame(scale(House.test2, 
+                      center = train.mins2, 
+                      scale  = train.maxs2 - train.mins2))
+
+
+House.train3.scaled <- 
+  as.data.frame(scale(House.train.balanced, 
+                      center = train.mins3, 
+                      scale  = train.maxs3 - train.mins3))
+```
+
+Below we can observe results of our first trained neural network.
+```{r  message=FALSE}
+nn1_2 <- neuralnet(formula_based_on_rpart_importance, 
+                data   = House.train.scaled,
+                hidden = c(1), 
+                linear.output = T)
+#Plot of neural network
+plot(nn1_2, rep = "best")
+
+nn1_2.train.pred <- compute(nn1_2,subset(House.train.scaled, select=-price))
+#scalling back
+nn1_2.train.pred.unscaled <- 
+  nn1_2.train.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn1_2.train.MSE <- sum((House.train$price - nn1_2.train.pred.unscaled)^2)/nrow(House.train)
+nn1_2.train.MAE <- sum(abs(House.train$price - nn1_2.train.pred.unscaled))/nrow(House.train)
+cat(paste0("Train MSE.lm = ", round(lm.MSE.train, 2), ", " ,  
+           "Train MSE.nn = ", round(nn1_2.train.MSE, 2)))
+cat(paste0("Train MAE.lm = ", round(lm.MAE.train, 2), ", " ,  
+           "Train MAE.nn = ", round(nn1_2.train.MAE, 2)))
+
+
+nn1_2.test.pred <- compute(nn1_2, subset(House.test.scaled, select=-price))
+nn1_2.test.pred.unscaled <- 
+  nn1_2.test.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn1_2.test.MSE <- sum((House.test$price - nn1_2.test.pred.unscaled)^2)/nrow(House.test)
+nn1_2.test.MAE <- sum(abs(House.test$price - nn1_2.test.pred.unscaled))/nrow(House.test)
+cat(paste0("Test MSE.lm = ", round(lm.MSE, 2), ", " ,  
+           "Test MSE.nn = ", round(nn1_2.test.MSE, 2)))
+cat(paste0("Test MAE.lm = ", round(lm.MAE, 2), ", " ,  
+           "Test MAE.nn = ", round(nn1_2.test.MAE, 2)))
+
+#plot
+plot(House.test$price,
+     nn1_2.test.pred.unscaled, 
+     col = 'red', main = 'Real vs predicted NN', pch = 18, cex = 0.7)
+points(House.test$price, 
+       lm.pred, 
+       col = 'blue', pch = 18, cex = 0.7)
+abline(0, 1, lwd = 2)
+legend('topleft', legend = c('NN', 'LM'), 
+       pch = 18, col = c('red', 'blue'))
+
+```
+
+As we can see basic NN (1 hidden layer) results are slightly better in comparison to linear model but still are not satysfing. For example gradient boosting models did much better.We can compare results of both models on scatter plot.
+
+```{r  message=FALSE}
+if(0) {nn2 <- neuralnet(formula_based_on_rpart_importance, 
+                 data   = House.train.scaled,
+                 hidden = c(10), 
+                 linear.output = T, threshold=0.2,stepmax=1e4)
+
+saveRDS(nn2, file= "nn2.rds")
+}
+
+
+nn2 <- readRDS("nn2.rds")
+
+plot(nn2, rep = "best")
+
+
+nn2.train.pred <- compute(nn2,subset(House.train.scaled, select=-price))
+#scalling back
+nn2.train.pred.unscaled <- 
+  nn2.train.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn2.train.MSE <- sum((House.train$price - nn2.train.pred.unscaled)^2)/nrow(House.train)
+nn2.train.MAE <- sum(abs(House.train$price - nn2.train.pred.unscaled))/nrow(House.train)
+cat(paste0("Train MSE.lm = ", round(lm.MSE.train, 2), ", " ,  
+           "Train MSE.nn = ", round(nn2.train.MSE, 2)))
+cat(paste0("Train MAE.lm = ", round(lm.MAE.train, 2), ", " ,  
+           "Train MAE.nn = ", round(nn2.train.MAE, 2)))
+
+
+nn2.test.pred <- compute(nn2, subset(House.test.scaled, select=-price))
+nn2.test.pred.unscaled <- 
+  nn2.test.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn2.test.MSE <- sum((House.test$price - nn2.test.pred.unscaled)^2)/nrow(House.test)
+nn2.test.MAE <- sum(abs(House.test$price - nn2.test.pred.unscaled))/nrow(House.test)
+cat(paste0("Test MSE.lm = ", round(lm.MSE, 2), ", " ,  
+           "Test MSE.nn = ", round(nn2.test.MSE, 2)))
+cat(paste0("Test MAE.lm = ", round(lm.MAE, 2), ", " ,  
+           "Test MAE.nn = ", round(nn2.test.MAE, 2)))
+
+#plot
+plot(House.test$price,
+     nn2.test.pred.unscaled, 
+     col = 'red', main = 'Real vs predicted NN', pch = 18, cex = 0.7)
+points(House.test$price, 
+       lm.pred, 
+       col = 'blue', pch = 18, cex = 0.7)
+abline(0, 1, lwd = 2)
+legend('topleft', legend = c('NN', 'LM'), 
+       pch = 18, col = c('red', 'blue'))
+
+
+
+```
+
+For network with 10 hidden layers are better than for NN with 1 layer but the difference is not significant. 
+
+```{r  message=FALSE}
+if(0){
+nn3 <- neuralnet(formula_based_on_rpart_importance, 
+                 data   = House.train.scaled,
+                 hidden = c(20), 
+                 linear.output = T, threshold=0.2)
+
+saveRDS(nn3, file= "nn3.rds")
+}
+nn3 <- readRDS("nn3.rds")
+
+plot(nn3, rep = "best")
+
+
+nn3.train.pred <- compute(nn3,subset(House.train.scaled, select=-price))
+#scalling back
+nn3.train.pred.unscaled <- 
+  nn3.train.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn3.train.MSE <- sum((House.train$price - nn3.train.pred.unscaled)^2)/nrow(House.train)
+nn3.train.MAE <- sum(abs(House.train$price - nn3.train.pred.unscaled))/nrow(House.train)
+cat(paste0("Train MSE.lm = ", round(lm.MSE.train, 2), ", " ,  
+           "Train MSE.nn = ", round(nn3.train.MSE, 2)))
+cat(paste0("Train MAE.lm = ", round(lm.MAE.train, 2), ", " ,  
+           "Train MAE.nn = ", round(nn3.train.MAE, 2)))
+
+
+nn3.test.pred <- compute(nn3, subset(House.test.scaled, select=-price))
+nn3.test.pred.unscaled <- 
+  nn3.test.pred$net.result * 
+  (train.maxs["price"] - train.mins["price"]) + train.mins["price"]
+nn3.test.MSE <- sum((House.test$price - nn3.test.pred.unscaled)^2)/nrow(House.test)
+nn3.test.MAE <- sum(abs(House.test$price - nn3.test.pred.unscaled))/nrow(House.test)
+cat(paste0("Test MSE.lm = ", round(lm.MSE, 2), ", " ,  
+           "Test MSE.nn = ", round(nn3.test.MSE, 2)))
+cat(paste0("Test MAE.lm = ", round(lm.MAE, 2), ", " ,  
+           "Test MAE.nn = ", round(nn3.test.MAE, 2)))
+
+#plot
+plot(House.test$price,
+     nn3.test.pred.unscaled, 
+     col = 'red', main = 'Real vs predicted NN', pch = 18, cex = 0.7)
+points(House.test$price, 
+       lm.pred, 
+       col = 'blue', pch = 18, cex = 0.7)
+abline(0, 1, lwd = 2)
+legend('topleft', legend = c('NN', 'LM'), 
+       pch = 18, col = c('red', 'blue'))
+
+
+
+
+
+```
+
+More layers has not changed the outcomes at all.
+
+```{r  message=FALSE}
+if(0){
+nn3_2 <- neuralnet(formula_based_on_rpart_importance, 
+                 data   = House.train2.scaled,
+                 hidden = c(20), 
+                 linear.output = T, threshold=0.2)
+
+saveRDS(nn3_2, file= "nn3_2.rds")
+}
+nn3_2 <- readRDS("nn3_2.rds")
+
+
+
+
+nn3_2.train.pred <- compute(nn3_2,subset(House.train2.scaled, select=-price))
+#scalling back
+nn3_2.train.pred.unscaled <- 
+  nn3_2.train.pred$net.result * 
+  (train.maxs2["price"] - train.mins2["price"]) + train.mins2["price"]
+nn3_2.train.MSE <- sum((House.train2$price - nn3_2.train.pred.unscaled)^2)/nrow(House.train2)
+nn3_2.train.MAE <- sum(abs(House.train2$price - nn3_2.train.pred.unscaled))/nrow(House.train2)
+cat(paste0("Train MSE.lm = ", round(lm.MSE.train, 2), ", " ,  
+           "Train MSE.nn = ", round(nn3_2.train.MSE, 2)))
+cat(paste0("Train MAE.lm = ", round(lm.MAE.train, 2), ", " ,  
+           "Train MAE.nn = ", round(nn3_2.train.MAE, 2)))
+
+
+nn3_2.test.pred <- compute(nn3_2, subset(House.test, select=-price))
+nn3_2.test.pred.unscaled <- 
+  nn3_2.test.pred$net.result * 
+  (train.maxs2["price"] - train.mins2["price"]) + train.mins2["price"]
+nn3_2.test.MSE <- sum((House.test$price - nn3_2.test.pred.unscaled)^2)/nrow(House.test)
+nn3_2.test.MAE <- sum(abs(House.test$price - nn3_2.test.pred.unscaled))/nrow(House.test)
+cat(paste0("Test MSE.lm = ", round(lm.MSE, 2), ", " ,  
+           "Test MSE.nn = ", round(nn3_2.test.MSE, 2)))
+cat(paste0("Test MAE.lm = ", round(lm.MAE, 2), ", " ,  
+           "Test MAE.nn = ", round(nn3_2.test.MAE, 2)))
+```
+
+The outcomes of NN on TEST dataset without outliers in Y variable are the worst. 
+
+```{r   message=FALSE}
+if(0){
+nn3_3 <- neuralnet(formula_based_on_rpart_importance, 
+                   data   = House.train3.scaled,
+                   hidden = c(20), 
+                   linear.output = T, threshold=0.2)
+
+saveRDS(nn3_3, file= "nn3_3.rds")
+}
+nn3_3 <- readRDS("nn3_3.rds")
+
+
+
+
+nn3_3.train.pred <- compute(nn3_3,subset(House.train3.scaled, select=-price))
+#scalling back
+nn3_3.train.pred.unscaled <- 
+  nn3_3.train.pred$net.result * 
+  (train.maxs3["price"] - train.mins3["price"]) + train.mins3["price"]
+nn3_3.train.MSE <- sum((House.train.balanced$price - nn3_3.train.pred.unscaled)^2)/nrow(House.train.balanced)
+nn3_3.train.MAE <- sum(abs(House.train.balanced$price - nn3_3.train.pred.unscaled))/nrow(House.train.balanced)
+cat(paste0("Train MSE.lm = ", round(lm.MSE.train, 2), ", " ,  
+           "Train MSE.nn = ", round(nn3_3.train.MSE, 2)))
+cat(paste0("Train MAE.lm = ", round(lm.MAE.train, 2), ", " ,  
+           "Train MAE.nn = ", round(nn3_3.train.MAE, 2)))
+
+
+nn3_3.test.pred <- compute(nn3_3, subset(House.test, select=-price))
+nn3_3.test.pred.unscaled <- 
+  nn3_3.test.pred$net.result * 
+  (train.maxs2["price"] - train.mins2["price"]) + train.mins2["price"]
+nn3_3.test.MSE <- sum((House.test$price - nn3_3.test.pred.unscaled)^2)/nrow(House.test)
+nn3_3.test.MAE <- sum(abs(House.test$price - nn3_3.test.pred.unscaled))/nrow(House.test)
+cat(paste0("Test MSE.lm = ", round(lm.MSE, 2), ", " ,  
+           "Test MSE.nn = ", round(nn3_3.test.MSE, 2)))
+cat(paste0("Test MAE.lm = ", round(lm.MAE, 2), ", " ,  
+           "Test MAE.nn = ", round(nn3_3.test.MAE, 2)))
+
+
+
+
+```
+
+Set balanced with SMOTE method also did not give us the expected better results.
+
+## Summary and conclusions
+
+```{r echo=FALSE}
+
+Model <- c("GLM","TREE","RF","GBM","NN")
+Train_MSE <- c(lm.MSE.train,mean((pred   - House.train.balanced$price) ^ 2),mean((kingCounty.rf.pred   - House.train.balanced$price) ^ 2),mean((House2.gbm.pred - House.train2$price) ^ 2),nn3.train.MSE)
+Train_MAE <- c(lm.MAE.train,mean(abs(pred   - House.train.balanced$price)) ,mean(abs(kingCounty.rf.pred   - House.train.balanced$price)),mean(abs(House2.gbm.pred - House.train2$price)),nn3.train.MAE)
+Test_MSE <- c(lm.MSE.test,mean((pred_test   - House.test$price) ^ 2),mean((kingCounty.rf.predt   - House.test$price) ^ 2),mean((House2.gbm.test_pred - House.test2$price) ^ 2),nn3.test.MSE)
+Test_MAE <- c(lm.MAE.test,mean(abs(pred_test   - House.test$price)),mean(abs(kingCounty.rf.predt   - House.test$price)),mean(abs(House2.gbm.test_pred - House.test2$price)),nn3.test.MAE)
+
+final_results <- data.frame(Model, Train_MSE, Train_MAE, Test_MSE, Test_MAE)
+
+
+final_results$Train_MSE <- paste0(round((final_results$Train_MSE/1000000),0)," M")
+final_results$Test_MSE <- paste0(round((final_results$Test_MSE/1000000),0)," M")
+final_results$Train_MAE <- paste0(round((final_results$Train_MAE/1000),0)," K")
+final_results$Test_MAE <- paste0(round((final_results$Test_MAE/1000),0)," K")
+
+```
+
+The table below represents the results of our best tuned models. As we can see the values of MSE metric are huge in every case and it's hard to interpret it in a business way. It's likely that our models did not do the best job of predicting prices for the most expensive properties because they were represented by a small sample of data, which could powerfully increase the MSE. We can surmise that this is the reason for the high MSE. Thankfully MAE measure can tell us more. MAE for TEST sub sample was the smallest in case of Random Forest model. This value indicated that, on average, we made an error of $68,000 when predicting housing prices. This seems like a pretty good result, considering that we had cases of properties worth more than 1.5 million in our collection. Unfortunately, in the case of the random forest, things are no longer so colorful if we compare our results from the test set with those from the training set. On the training set, the MAE was 29K. Such a large discrepancy between the result of the learning sample and the test sample indicates that the model was overfitted. We cannot consider the random forest as our top model. The issue is different for the gradient boosting model. There, the MAE per TEST was 70k, which is marginally worse than the random forest. On TRAIN for the GBM, the MAE was 66K. Such a discrepancy between the TRAIN and TEST results may indicate a correct fit of the model to the US house price data. Therefore, our best model was the Gradient Boosting model. 
+  
+```{r echo=FALSE, results='asis'}
+library(knitr)
+kable(final_results, capltion="Best models")
+```
+
